@@ -1,0 +1,43 @@
+# --- Secrets ---------------------------------------------------------------
+.env
+*.pem
+*.key
+
+# --- Donnees nominatives et de sante (NE JAMAIS VERSIONNER) ----------------
+# Exports CPAM : NIR, periodes d'arret
+data/entrees/
+# Classeurs produits : montants IJSS par personne
+data/sorties/
+# Referentiels telecharges : noms, noms de naissance, matricules, dates
+cache/
+# Correspondances nominatives saisies a la main
+config/alias_salaries.csv
+
+# Copies de travail deposees par l'assistant
+Claude outputs/
+# Filets de securite : ces fichiers ne doivent jamais etre versionnes,
+# quel que soit le dossier ou ils se trouvent
+personnel_dunes.csv
+repartition_analytique.csv
+repartition_analytique_2026.csv
+alias_salaries.csv
+
+# --- Fichiers generes ------------------------------------------------------
+archives/
+__pycache__/
+*.py[cod]
+*.bak
+*.bak_*
+*.bak[0-9]_*
+~$*
+.ipynb_checkpoints/
+
+# --- Environnements / outils ----------------------------------------------
+.venv/
+venv/
+env/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Claude outputs/

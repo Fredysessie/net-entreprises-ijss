@@ -1,0 +1,16 @@
+Nom CPAM;Nom analytique
+# ---------------------------------------------------------------------------
+# Correspondances manuelles pour les salaries que le rapprochement automatique
+# ne peut pas trancher (nom d'usage / nom de naissance, homonymie, coquille).
+#
+#   colonne 1 : le libelle EXACT vu dans l'onglet "Recap par salarie"
+#   colonne 2 : le libelle EXACT de la colonne "Salarie" du referentiel
+#               analytique (onglet Repartition_analytique_AAAA)
+#
+# Les lignes commencant par # sont ignorees.
+# Un alias est prioritaire sur toute detection automatique.
+#
+# Exemples (noms fictifs) :
+# LEROY MARIE;DUPONT Marie
+# MARTIN J CLAUDE;MARTIN Jean-Claude
+# ---------------------------------------------------------------------------
