@@ -87,7 +87,8 @@ Le classeur produit va dans `data/sorties/paiements_analytique_<ddmmaaaa>.xlsx`.
 
 | Onglet | Contenu |
 |---|---|
-| **Paiements** | Un paiement par ligne, avec `Montant reçu` (total à payer de la journée BPIJ), `Montant virement` (net réellement crédité pour la date) et `Journée BPIJ` |
+| **Saisie QUADRA** | En premier : une ligne par virement (`Cle_long`) — Siret, Libellé (= `Libellé_QUADRA`), Date, Montant (montant reçu de la journée) et Répartition analytique ventilée en euros par centre (somme = Montant). Règle SIEGE : un salarié dont la répartition contient `DSIEGE` est affecté 100 % DSIEGE |
+| **Paiements** | Un paiement par ligne, avec `Montant reçu` (total à payer de la journée BPIJ), `Montant virement` (net réellement crédité pour la date), `Journée BPIJ` et la colonne `Répartition analytique` (centres du salarié au mois du paiement, règle SIEGE incluse), plus les colonnes QUADRA : `Caisse_short` (caisse abrégée, ex. `CPAM BDR`), `Cle_long` = `Journée BPIJ@Date#Montant reçu €_3 derniers du SIRET` (identifie un virement : les virements se font par journée BPIJ) et `Libellé_QUADRA` (caisse abrégée + salarié complet si la clé est unique, sinon noms de famille séparés par `/`) |
 | **Détail des paiements** | Le détail prestation par prestation, avec `Clé` = `Type_MM/AAAA@MM/AAAA_5 derniers du SIRET` |
 | **Récap par salarié** | Salarié, Montant, Clé |
 | **Répartition analytique** | Une ligne par salarié × clé × centre analytique, avec taux et montant ventilé |

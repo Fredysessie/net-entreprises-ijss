@@ -3,6 +3,11 @@ net_entreprise_final.py
 ========================
 Module d'automatisation Net-Entreprises -> DSIJ / Attestations de salaire.
 
+Corrections v4 :
+  - Onglet "Paiements" : colonnes QUADRA "Caisse_short", "Cle_long" (identifiant
+    du virement : {Journée BPIJ}@{Date}#{Montant reçu} €_{3 derniers chiffres du
+    SIRET}) et "Libellé_QUADRA" (caisse abrégée + salarié(s) de la journée)
+
 Corrections v3 :
   - Onglet "Paiements" :
       * Colonnes "SIREN/SIRET", "Numéro de Sécurité Sociale", "identifiant" -> numériques
@@ -152,7 +157,10 @@ COL_JOURNEE_BPIJ     = "Journée BPIJ"       # identifiant de la journee sur le 
 SHEET_CENTER_COLS = {
     "Paiements": [
         "SIREN/SIRET", "Date", "Numéro de Sécurité Sociale", "Type", "identifiant",
-        "Journée BPIJ",
+        "Journée BPIJ", "Cle_long",
+    ],
+    "Saisie QUADRA": [
+        "Siret", "Date",
     ],
     "Détail des paiements": [
         "Identifiant_BPIJ", "NIR", "Prestation_CodeNature",
@@ -175,6 +183,7 @@ SHEET_CENTER_COLS = {
 SHEET_ID_NUMBER_FORMAT_COLS = {
     "Paiements": ["SIREN/SIRET", "Numéro de Sécurité Sociale", "identifiant",
                   "Journée BPIJ"],
+    "Saisie QUADRA": ["Siret"],
     "Détail des paiements": ["Identifiant_BPIJ", "NIR"],
 }
 
@@ -322,7 +331,272 @@ class NetEntreprise:
             cols.remove(c)
         i = cols.index("Montant") + 1
         cols[i:i] = [COL_MONTANT_RECU, COL_MONTANT_VIREMENT]
+        return self.ajouter_libelles_quadra(df[cols])
+
+    # ------------------------------------------------------------------
+    # Libelles QUADRA : Caisse_short, Cle_long, Libellé_QUADRA
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _caisse_short(caisse) -> str:
+        """
+        Abrege la caisse emettrice pour les libelles QUADRA :
+          * "BOUCHES du RHÔNE" -> "BDR"
+          * " de " / " du " / " des " / " la " -> " "
+        Ex. "CPAM des BOUCHES du RHÔNE" -> "CPAM BDR",
+            "CPAM de la DROME" -> "CPAM DROME"
+        """
+        s = str(caisse or "").replace("\xa0", " ").strip()
+        s = re.sub(r"BOUCHES\s+du\s+RH[ÔO]NE", "BDR", s, flags=re.IGNORECASE)
+        for particule in (" des ", " du ", " de ", " la "):
+            s = s.replace(particule, " ")
+        return re.sub(r"\s+", " ", s).strip()
+
+    # Particules qui font partie du nom de famille (ex. "EL GUIDI", "BEN ALI")
+    _PARTICULES_NOM = {
+        "EL", "AL", "BEN", "AIT", "OULD", "BOU", "ABOU", "ABD",
+        "DE", "DEL", "DELLA", "DA", "DI", "DU", "DOS", "DAS",
+        "LE", "LA", "VAN", "VON", "DER", "DEN", "MC", "MAC",
+        "SAINT", "STE", "ST",
+    }
+
+    @classmethod
+    def _nom_famille(cls, salarie) -> str:
+        """
+        Nom de famille depuis le libelle site « NOM PRENOM(S) » : premier mot,
+        en gardant les particules accolees (ex. "EL GUIDI ICHEM" -> "EL GUIDI",
+        "SARR MAHMOUDOU" -> "SARR").
+        """
+        mots = str(salarie or "").split()
+        if not mots:
+            return ""
+        i = 0
+        while i < len(mots) - 1 and mots[i].upper().rstrip(".'") in cls._PARTICULES_NOM:
+            i += 1
+        return " ".join(mots[: i + 1])
+
+    def ajouter_libelles_quadra(self, df):
+        """
+        Ajoute a l'onglet « Paiements » les colonnes d'aide au rapprochement
+        bancaire dans QUADRA (appelee automatiquement par
+        ajouter_montants_recus) :
+
+          * "Caisse_short"   : caisse emettrice abregee (cf. _caisse_short) ;
+
+          * "Cle_long"       : identifiant du virement recu en banque.
+            Les virements se font par journee BPIJ :
+              {Journée BPIJ}@{Date}#{Montant reçu} €_{3 derniers chiffres SIRET}
+            Ex. '3983312175@08/09/2026#282,94 €_158'
+
+          * "Libellé_QUADRA" : libelle d'ecriture propose pour QUADRA.
+              - Cle_long unique (1 ligne)  : Caisse_short + Salarié complet
+                Ex. 'CPAM du VAUCLUSE BOAKYE WILHEMINA'
+              - Cle_long partagee (n > 1)  : Caisse_short + noms de famille
+                distincts des salaries de la journee, separes par "/"
+                Ex. 'CPAM BDR AMAR/SEBAA'
+        """
+        if df is None or df.empty:
+            return df
+        requises = ("Caisse émettrice", "Salarié", "Date",
+                    COL_MONTANT_RECU, "SIREN/SIRET")
+        for col in requises:
+            if col not in df.columns:
+                logger.warning("Colonne « %s » absente : libelles QUADRA non calcules", col)
+                return df
+
+        df = df.copy()
+        df["Caisse_short"] = df["Caisse émettrice"].map(self._caisse_short)
+
+        # --- Cle_long ------------------------------------------------------
+        if COL_JOURNEE_BPIJ in df.columns:
+            journee_txt = (df[COL_JOURNEE_BPIJ].astype(str)
+                           .str.replace(r"\D", "", regex=True))   # <NA> -> ""
+        else:
+            journee_txt = pd.Series("", index=df.index)
+        montant_txt = (
+            pd.to_numeric(df[COL_MONTANT_RECU], errors="coerce").fillna(0.0)
+            .map(lambda v: f"{v:.2f}".replace(".", ","))
+        )
+        siret3   = df["SIREN/SIRET"].map(lambda v: self._siret_lastn(v, 3))
+        date_txt = df["Date"].astype(str).str.strip()
+        df["Cle_long"] = journee_txt + "@" + date_txt + "#" + montant_txt + " €_" + siret3
+
+        # --- Libellé_QUADRA ------------------------------------------------
+        salarie = df["Salarié"].astype(str).str.strip()
+        noms    = salarie.map(self._nom_famille)          # nom de famille
+
+        effectif = df.groupby("Cle_long")["Cle_long"].transform("size")
+        noms_par_cle = noms.groupby(df["Cle_long"]).transform(
+            lambda s: "/".join(dict.fromkeys(n for n in s if n))
+        )
+        libelle = (df["Caisse_short"] + " " + salarie).where(
+            effectif == 1, df["Caisse_short"] + " " + noms_par_cle
+        )
+        df["Libellé_QUADRA"] = (libelle.str.replace(r"\s+", " ", regex=True)
+                                       .str.strip())
+
+        logger.info("Libelles QUADRA : %d Cle_long distincte(s) dont %d partagee(s)",
+                    df["Cle_long"].nunique(),
+                    df.loc[effectif > 1, "Cle_long"].nunique())
+
+        # --- Ordre : Caisse_short apres la caisse, cles en fin de tableau --
+        cols = [c for c in df.columns
+                if c not in ("Caisse_short", "Cle_long", "Libellé_QUADRA")]
+        cols.insert(cols.index("Caisse émettrice") + 1, "Caisse_short")
+        cols += ["Cle_long", "Libellé_QUADRA"]
         return df[cols]
+
+    # ------------------------------------------------------------------
+    # Répartition analytique (réutilise repartition_analytique.py)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _mois_depuis_date(date_txt) -> str:
+        """'08/09/2026' -> '09/2026'."""
+        trouve = re.search(r"\d{2}/(\d{2}/\d{4})", str(date_txt or ""))
+        return trouve.group(1) if trouve else ""
+
+    @staticmethod
+    def _texte_repartition(centres) -> str:
+        """[(centre, taux)] -> 'CENTRE' (un seul) ou 'C1 (50%); C2 (30%)'."""
+        centres = [(c, t) for c, t in centres if t]
+        if not centres:
+            return ""
+        if len(centres) == 1 and abs(centres[0][1] - 1.0) < 1e-9:
+            return str(centres[0][0])
+        def pct(t):
+            return f"{round(t * 100, 2):g}".replace(".", ",") + "%"
+        return "; ".join(f"{c} ({pct(t)})" for c, t in centres)
+
+    @staticmethod
+    def _appliquer_regle_siege(centres):
+        """Salarié du SIEGE : si l'un de ses centres est DSIEGE, toute sa
+        répartition est remplacée par DSIEGE à 100 % (règle de gestion :
+        les salariés du siège ne sont pas ventilés sur les autres centres)."""
+        if any(str(c).strip().upper() == "DSIEGE" for c, _ in centres):
+            return [("DSIEGE", 1.0)]
+        return centres
+
+    def _centres_salarie(self, referentiel, nom: str, mois: str,
+                         cache: dict) -> list:
+        """Centres analytiques [(centre, taux)] d'un salarié pour un mois
+        (règle SIEGE appliquée)."""
+        from repartition_analytique import apparier_nom, _choisir_mois
+        if (nom, mois) in cache:
+            return cache[(nom, mois)]
+        centres = []
+        appariement = apparier_nom(nom, referentiel.index_noms, referentiel.alias,
+                                   referentiel.jetons_naissance, referentiel.libelles)
+        cle = appariement.get("cle")
+        if cle:
+            mois_retenu, _ = _choisir_mois(mois, referentiel.mois_disponibles(cle))
+            if mois_retenu:
+                centres = self._appliquer_regle_siege(
+                    referentiel.centres(cle, mois_retenu))
+        cache[(nom, mois)] = centres
+        return centres
+
+    def ajouter_repartition_paiements(self, df, referentiel):
+        """Colonne « Répartition analytique » de l'onglet Paiements.
+
+        Pour chaque ligne : centres analytiques du salarié au mois de la date
+        de paiement (repli sur le mois disponible le plus proche). Placée
+        juste après « Montant ».
+        """
+        if df is None or df.empty or referentiel is None:
+            return df
+        if not {"Salarié", "Date"}.issubset(df.columns):
+            logger.warning("Répartition Paiements : colonnes Salarié/Date absentes")
+            return df
+        df = df.copy()
+        cache: dict = {}
+        df["Répartition analytique"] = [
+            self._texte_repartition(
+                self._centres_salarie(referentiel, str(nom).strip(),
+                                      self._mois_depuis_date(date), cache))
+            for nom, date in zip(df["Salarié"], df["Date"])
+        ]
+        nb = int((df["Répartition analytique"] != "").sum())
+        logger.info("Répartition analytique Paiements : %d/%d lignes renseignées",
+                    nb, len(df))
+        cols = [c for c in df.columns if c != "Répartition analytique"]
+        pos = cols.index("Montant") + 1 if "Montant" in cols else len(cols)
+        cols.insert(pos, "Répartition analytique")
+        return df[cols]
+
+    def construire_saisie_quadra(self, df, referentiel):
+        """Onglet « Saisie QUADRA » : une ligne par virement (Cle_long).
+
+        Colonnes : Siret, Libellé (= Libellé_QUADRA), Date, Montant (montant
+        reçu de la journée BPIJ, à défaut somme des paiements) et Répartition
+        analytique ventilée en euros par centre (« 1938,90 : MSUMAR (90,07%) »,
+        ou le centre seul s'il est unique) — somme strictement égale au
+        Montant grâce à ventiler_montant. Les paiements sans centres sont
+        portés en « NON AFFECTE ».
+        """
+        if df is None or df.empty:
+            return None
+        requises = {"Cle_long", "Libellé_QUADRA", "SIREN/SIRET", "Date",
+                    "Salarié", "Montant"}
+        if not requises.issubset(df.columns):
+            logger.warning("Saisie QUADRA : colonnes manquantes (%s)",
+                           ", ".join(sorted(requises - set(df.columns))))
+            return None
+        from repartition_analytique import ventiler_montant
+
+        def fmt_montant(x):
+            s = f"{x:.2f}".replace(".", ",")
+            return s[:-3] if s.endswith(",00") else s
+
+        cache: dict = {}
+        lignes = []
+        for cle_long, grp in df.groupby("Cle_long", dropna=False, sort=False):
+            montants = pd.to_numeric(grp["Montant"], errors="coerce").fillna(0.0)
+            if COL_MONTANT_RECU in grp.columns:
+                recu = pd.to_numeric(grp[COL_MONTANT_RECU], errors="coerce").dropna()
+                montant_quadra = round(float(recu.iloc[0]), 2) if not recu.empty                     else round(float(montants.sum()), 2)
+            else:
+                montant_quadra = round(float(montants.sum()), 2)
+
+            # Poids par centre : chaque paiement du virement ventilé sur les
+            # centres de son salarié (mois de la date de paiement).
+            poids: dict[str, float] = {}
+            for (_, ligne), montant in zip(grp.iterrows(), montants):
+                centres = [] if referentiel is None else self._centres_salarie(
+                    referentiel, str(ligne["Salarié"]).strip(),
+                    self._mois_depuis_date(ligne["Date"]), cache)
+                total_taux = sum(t for _, t in centres)
+                if centres and total_taux:
+                    for centre, taux in centres:
+                        poids[centre] = poids.get(centre, 0.0) + montant * taux / total_taux
+                else:
+                    poids["NON AFFECTE"] = poids.get("NON AFFECTE", 0.0) + montant
+
+            ventile = ventiler_montant(montant_quadra, sorted(poids.items()))
+            ventile = [(c, t, v) for c, t, v in ventile if abs(v) >= 0.005]
+            if len(ventile) == 1:
+                texte = ventile[0][0]
+            else:
+                total = sum(v for _, _, v in ventile)
+                def pct(v):
+                    return (f"{round(v * 100 / total, 2):g}".replace(".", ",") + "%")                         if total else ""
+                texte = "\n".join(
+                    f"{fmt_montant(v)} : {c}" + (f" ({pct(v)})" if total else "")
+                    for c, _, v in sorted(ventile, key=lambda x: (-x[2], x[0])))
+
+            lignes.append({
+                "Siret": grp["SIREN/SIRET"].iloc[0],
+                "Libellé": grp["Libellé_QUADRA"].iloc[0],
+                "Date": grp["Date"].iloc[0],
+                "Montant": montant_quadra,
+                "Répartition analytique": texte,
+            })
+
+        df_quadra = pd.DataFrame(
+            lignes, columns=["Siret", "Libellé", "Date", "Montant",
+                             "Répartition analytique"])
+        logger.info("Saisie QUADRA : %d virement(s)", len(df_quadra))
+        return df_quadra
 
     # ------------------------------------------------------------------
 
@@ -1225,19 +1499,24 @@ class NetEntreprise:
             return ""
 
     @staticmethod
-    def _siret_last5(siret_val) -> str:
-        """Retourne les 5 derniers chiffres du SIRET (chaîne, zéros conservés)."""
+    def _siret_lastn(siret_val, n: int) -> str:
+        """Retourne les n derniers chiffres du SIRET (chaîne, zéros conservés)."""
         try:
             if siret_val is None or (isinstance(siret_val, float) and pd.isna(siret_val)) or pd.isna(siret_val):
-                return "00000"
+                return "0" * n
         except Exception:
             pass
         try:
-            n = int(siret_val)
-            return f"{n:014d}"[-5:]
+            v = int(siret_val)
+            return f"{v:014d}"[-n:]
         except Exception:
             digits = re.sub(r"\D", "", str(siret_val))
-            return digits[-5:].rjust(5, "0") if digits else "00000"
+            return digits[-n:].rjust(n, "0") if digits else "0" * n
+
+    @classmethod
+    def _siret_last5(cls, siret_val) -> str:
+        """Retourne les 5 derniers chiffres du SIRET (chaîne, zéros conservés)."""
+        return cls._siret_lastn(siret_val, 5)
 
     @classmethod
     def _build_cle(cls, row) -> str:
@@ -1296,9 +1575,29 @@ class NetEntreprise:
                 # -- Demande utilisateur : ajout de la colonne "Clé"
                 df_all["Clé"] = df_all.apply(self._build_cle, axis=1)
 
+        # ---- 1 bis. Répartition analytique : colonne Paiements + Saisie QUADRA
+        referentiel = None
+        df_quadra = None
+        try:
+            from repartition_analytique import construire_referentiel
+            referentiel = construire_referentiel()
+            df_paiements = self.ajouter_repartition_paiements(df_paiements, referentiel)
+            df_quadra = self.construire_saisie_quadra(df_paiements, referentiel)
+        except FileNotFoundError as exc:
+            logger.warning("Répartition analytique Paiements ignorée : %s", exc)
+        except ImportError as exc:
+            logger.warning("Module repartition_analytique absent : %s", exc)
+        except Exception as exc:              # noqa: BLE001
+            logger.exception("Échec répartition analytique Paiements : %s", exc)
+
         # ---- 2. Écriture brute avec pandas (aucun formatage) ----------------
         with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
-            # Onglet 1 — Paiements
+            # Onglet 1 — Saisie QUADRA (une ligne par virement / Cle_long) :
+            # placé en premier, c'est l'onglet de travail quotidien.
+            if df_quadra is not None and not df_quadra.empty:
+                df_quadra.to_excel(writer, sheet_name="Saisie QUADRA", index=False)
+
+            # Onglet 2 — Paiements
             df_paiements.to_excel(writer, sheet_name="Paiements", index=False)
 
             # Onglet 2 — Détail des paiements
@@ -1344,7 +1643,9 @@ class NetEntreprise:
                     from repartition_analytique import (
                         construire_ventilation_analytique, recap_par_centre,
                     )
-                    df_vent, df_ctrl = construire_ventilation_analytique(recap_salarie)
+                    # Réutilise le référentiel déjà téléchargé pour Paiements/QUADRA
+                    df_vent, df_ctrl = construire_ventilation_analytique(
+                        recap_salarie, referentiel=referentiel)
                     if df_vent is not None and not df_vent.empty:
                         df_vent.to_excel(writer, sheet_name="Répartition analytique",
                                          index=False)
@@ -1418,6 +1719,10 @@ class NetEntreprise:
         align_center = Alignment(horizontal="center", vertical="center", wrap_text=False)
         align_left   = Alignment(horizontal="left",   vertical="center", wrap_text=False)
         align_right  = Alignment(horizontal="right",  vertical="center", wrap_text=False)
+        # Cellules multi-lignes (ex. « Répartition analytique » de Saisie
+        # QUADRA) : renvoi à la ligne activé, sinon Excel affiche tout sur
+        # une seule ligne tant qu'on n'a pas cliqué dans la cellule.
+        align_left_wrap = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
         thin = Side(style="thin", color="CCCCCC")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -1439,6 +1744,7 @@ class NetEntreprise:
         }
 
         # --- Données (lignes 2+) ---
+        rows_multilignes: set[int] = set()
         for row_idx in range(2, max_row + 1):
             fill = fill_pair if row_idx % 2 == 0 else fill_impair
             for cell in ws[row_idx]:
@@ -1469,8 +1775,9 @@ class NetEntreprise:
                     cell.alignment = align_center
                 elif isinstance(val, (int, float)):
                     cell.alignment = align_right
-                elif val is None:
-                    cell.alignment = align_left
+                elif isinstance(val, str) and "\n" in val:
+                    cell.alignment = align_left_wrap
+                    rows_multilignes.add(row_idx)
                 else:
                     cell.alignment = align_left
 
@@ -1481,12 +1788,19 @@ class NetEntreprise:
             for row_idx in range(1, min(max_row + 1, 200)):   # sample 200 lignes max
                 val = ws.cell(row_idx, col_idx).value
                 if val is not None:
-                    max_len = max(max_len, len(str(val)))
+                    # Multi-lignes : la largeur se base sur la plus longue LIGNE
+                    max_len = max(max_len, *(len(l) for l in str(val).split("\n")))
             ws.column_dimensions[col_letter].width = min(max(max_len + 3, 10), 45)
 
         # --- Hauteur des lignes ---
         ws.row_dimensions[1].height = 22   # en-tête un peu plus haut
         for row_idx in range(2, max_row + 1):
+            if row_idx in rows_multilignes:
+                # Hauteur remise en automatique : Excel l'ajuste au nombre de
+                # lignes de la cellule (wrap_text), au lieu des 16 px fixes
+                # (None efface aussi une hauteur posée par un passage précédent).
+                ws.row_dimensions[row_idx].height = None
+                continue
             ws.row_dimensions[row_idx].height = 16
 
         # --- Figer la ligne d'en-tête ---

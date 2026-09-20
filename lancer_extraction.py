@@ -18,7 +18,8 @@ ni dans le classeur produit.
 
 Onglets produits
 ----------------
-  Paiements                  (dont "Montant reçu" / "Montant virement" / "Journée BPIJ")
+  Paiements                  (dont "Montant reçu" / "Montant virement" / "Journée BPIJ"
+                              et les colonnes QUADRA "Caisse_short" / "Cle_long" / "Libellé_QUADRA")
   Détail des paiements
   Récap par salarié
   Répartition analytique     <- ventilation des IJSS par centre analytique
